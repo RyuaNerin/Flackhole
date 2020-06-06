@@ -230,94 +230,6 @@ namespace Flackhole
             }
         }
 
-        private readonly object m_updateLock = new object();
-        private long m_destroySuccess = 0;
-        private int m_savedCount = 0;
-        private int m_savedCountSuccess = 0;
-        private void UpdateProgress(bool? noErrorDestroy, bool? noErrorSave)
-        {
-            lock (this.m_updateLock)
-            {
-                var count = this.m_favCount;
-                lock (this.m_favList)
-                    count -= this.m_favList.Count;
-
-                var p = (double)count / this.m_favCount;
-
-                if (noErrorDestroy.HasValue)
-                {
-                    if (noErrorDestroy ?? false)
-                        this.m_destroySuccess++;
-                }
-
-                if (noErrorSave.HasValue)
-                {
-                    this.m_savedCount++;
-                    if (noErrorSave ?? false)
-                        this.m_savedCountSuccess++;
-
-                }
-
-                this.Dispatcher.Invoke(() =>
-                {
-                    this.ctlProgress.Value = count;
-                    this.ctlProgressVal.Text = string.Format(
-                        "[{0:##0.0} %] {1:#,##0} / {2:#,##0}",
-                        p * 100,
-                        count,
-                        this.m_favCount
-                    );
-
-                    this.ctlDetailSucc.Text = string.Format(
-                        "삭제 성공 : {0:#,##0} / {1:#,##0} ({2:##0.0} %)",
-                        this.m_destroySuccess,
-                        this.m_favCount,
-                        (float)this.m_destroySuccess / this.m_favCount * 100);
-
-                    this.ctlDetailFail.Text = string.Format(
-                        "삭제 실패 : {0:#,##0} / {1:#,##0} ({2:##0.0} %)",
-                        count - this.m_destroySuccess,
-                        this.m_favCount,
-                        (float)(count - this.m_destroySuccess) / this.m_favCount * 100);
-
-                    this.ctlSaveSucc.Text = string.Format(
-                        "저장 성공 : {0:#,##0} / {1:#,##0} ({2:##0.0} %)",
-                        this.m_savedCountSuccess,
-                        this.m_savedCount,
-                        (float)this.m_savedCountSuccess / this.m_savedCount * 100);
-
-                    this.ctlSaveFail.Text = string.Format(
-                        "저장 실패 : {0:#,##0} / {1:#,##0} ({2:##0.0} %)",
-                        this.m_savedCount - this.m_savedCountSuccess,
-                        this.m_savedCount,
-                        (float)(this.m_savedCount - this.m_savedCountSuccess) / this.m_savedCount * 100);
-
-                    this.taskBarItemInfo.ProgressValue = p;
-                });
-            }
-        }
-
-        private readonly static string[] IECStr = { "B", "KiB", "MiB", "GiB", "TiB" };
-        private readonly static object UpdateFilesLock = new object();
-        private long m_savedCapacity = 0;
-        private int m_savedFiles = 0;
-        private void UpdateSavedCapacity(int size)
-        {
-            lock (UpdateFilesLock)
-            {
-                this.m_savedCapacity += size;
-
-                var bytes = (float)this.m_savedCapacity;
-                var files = ++this.m_savedFiles;
-
-                var i = 0;
-                while (bytes > 1000 && i++ < 5)
-                    bytes /= 1024;
-
-                this.Dispatcher.Invoke(() => this.ctlSaveCapacity.Text = string.Format("저장 용량 : {0:##0.0} {1} ({2:#,##0} 파일)", bytes, IECStr[i], files));
-            }
-        }
-
         private static readonly Regex regTCo = new Regex(@"https?://t\.co/([^ ]+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private void Runner()
         {
@@ -640,6 +552,94 @@ namespace Flackhole
             catch
             {
                 this.UpdateProgress(false, downloadSucceed);
+            }
+        }
+
+        private readonly object m_updateLock = new object();
+        private long m_destroySuccess = 0;
+        private int m_savedCount = 0;
+        private int m_savedCountSuccess = 0;
+        private void UpdateProgress(bool? noErrorDestroy, bool? noErrorSave)
+        {
+            lock (this.m_updateLock)
+            {
+                var count = this.m_favCount;
+                lock (this.m_favList)
+                    count -= this.m_favList.Count;
+
+                var p = (double)count / this.m_favCount;
+
+                if (noErrorDestroy.HasValue)
+                {
+                    if (noErrorDestroy ?? false)
+                        this.m_destroySuccess++;
+                }
+
+                if (noErrorSave.HasValue)
+                {
+                    this.m_savedCount++;
+                    if (noErrorSave ?? false)
+                        this.m_savedCountSuccess++;
+
+                }
+
+                this.Dispatcher.Invoke(() =>
+                {
+                    this.ctlProgress.Value = count;
+                    this.ctlProgressVal.Text = string.Format(
+                        "[{0:##0.0} %] {1:#,##0} / {2:#,##0}",
+                        p * 100,
+                        count,
+                        this.m_favCount
+                    );
+
+                    this.ctlDetailSucc.Text = string.Format(
+                        "삭제 성공 : {0:#,##0} / {1:#,##0} ({2:##0.0} %)",
+                        this.m_destroySuccess,
+                        this.m_favCount,
+                        (float)this.m_destroySuccess / this.m_favCount * 100);
+
+                    this.ctlDetailFail.Text = string.Format(
+                        "삭제 실패 : {0:#,##0} / {1:#,##0} ({2:##0.0} %)",
+                        count - this.m_destroySuccess,
+                        this.m_favCount,
+                        (float)(count - this.m_destroySuccess) / this.m_favCount * 100);
+
+                    this.ctlSaveSucc.Text = string.Format(
+                        "저장 성공 : {0:#,##0} / {1:#,##0} ({2:##0.0} %)",
+                        this.m_savedCountSuccess,
+                        this.m_savedCount,
+                        (float)this.m_savedCountSuccess / this.m_savedCount * 100);
+
+                    this.ctlSaveFail.Text = string.Format(
+                        "저장 실패 : {0:#,##0} / {1:#,##0} ({2:##0.0} %)",
+                        this.m_savedCount - this.m_savedCountSuccess,
+                        this.m_savedCount,
+                        (float)(this.m_savedCount - this.m_savedCountSuccess) / this.m_savedCount * 100);
+
+                    this.taskBarItemInfo.ProgressValue = p;
+                });
+            }
+        }
+
+        private readonly static string[] IECStr = { "B", "KiB", "MiB", "GiB", "TiB" };
+        private readonly static object UpdateFilesLock = new object();
+        private long m_savedCapacity = 0;
+        private int m_savedFiles = 0;
+        private void UpdateSavedCapacity(int size)
+        {
+            lock (UpdateFilesLock)
+            {
+                this.m_savedCapacity += size;
+
+                var bytes = (float)this.m_savedCapacity;
+                var files = ++this.m_savedFiles;
+
+                var i = 0;
+                while (bytes > 1000 && i++ < 5)
+                    bytes /= 1024;
+
+                this.Dispatcher.Invoke(() => this.ctlSaveCapacity.Text = string.Format("저장 용량 : {0:##0.0} {1} ({2:#,##0} 파일)", bytes, IECStr[i], files));
             }
         }
 
