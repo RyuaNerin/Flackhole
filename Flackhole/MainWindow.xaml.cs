@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -17,8 +18,11 @@ namespace Flackhole
 {
     internal partial class MainWindow : Window
     {
-        private const int Workers = 8;
-        private const int MaxTries = 3;
+        private const int WorkerDestory = 8;
+        private const int WorkerDownloader = 8;
+
+        private const int LookupIdCount = 100; // Lookup 할 때 한번에 보낼 id 수
+        private const int LookupMaxTries = 3;
         private const double ApiRateRemain = 0.5; // API 제한의 몇 % 를 남길 것인가
 
         public struct FavObject
@@ -55,20 +59,27 @@ namespace Flackhole
             public string FileName => 
                 regInvaild.Replace($"{this.Like.TweetId} {this.Like.FullText.Substring(0, Math.Min(this.Like.FullText.Length, 50))}", "").Trim().Trim('.', ' ').Trim();
         }
-
-        private readonly AutoResetEvent m_limitLock = new AutoResetEvent(true);
-        private readonly ManualResetEventSlim m_limit = new ManualResetEventSlim(true);
+        public struct FavObject2
+        {
+            public FavObject FavObject { get; set; }
+            public StatusObject Status { get; set; }
+        }
 
         private string m_baseDirectory;
         private string m_failDirectory;
 
         private TwitterClient m_twitterClient;
 
-        private readonly List<FavObject> m_favList = new List<FavObject>();
+        private readonly Stack<string> m_todoDestory = new Stack<string>(); // Fav.StatusId, 뒤에서부터 작업
+        private readonly Stack<FavObject2> m_todoDownload = new Stack<FavObject2>(); // 다운로드할 거
+        private readonly Stack<FavObject> m_todoLookup = new Stack<FavObject>();
+
         private int m_favCount;
         private DateTime m_startTime;
 
-        private int m_currentWorkers = Workers; // interlocked
+        private long m_workerDestory; // interlocked, 스레드 돌리기 전에 설정
+        private long m_workerDownloader; // interlocked
+        private long m_workerLookup;
 
         public MainWindow()
         {
@@ -78,6 +89,21 @@ namespace Flackhole
             ServicePointManager.DefaultConnectionLimit = 100;
         }
 
+        protected override void OnClosing(CancelEventArgs e)
+        {
+            base.OnClosing(e);
+
+            if (Interlocked.Read(ref this.m_workerDestory) != 0)
+            {
+                var r = MessageBox.Show(this, "정말 종료하시겠어요?\n\n다음에 실행할 때는 처음부터 다시 진행해야해요.", "Flackhole (관심글 청소기)", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+
+                if (r != MessageBoxResult.Yes)
+                {
+                    e.Cancel = true;
+                }
+            }
+        }
+
         protected override void OnClosed(EventArgs e)
         {
             base.OnClosed(e);
@@ -85,6 +111,7 @@ namespace Flackhole
             Application.Current.Shutdown();
         }
 
+        private static readonly Regex regTCo = new Regex(@"https?://t\.co/([^ ]+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private bool m_shown;
         protected override async void OnContentRendered(EventArgs e)
         {
@@ -139,6 +166,7 @@ namespace Flackhole
                 return;
             }
 
+            var lst = new List<FavObject>();
             var r = await Task.Factory.StartNew(() =>
             {
                 try
@@ -148,7 +176,7 @@ namespace Flackhole
                     {
                         while (rd.Read() != '=') ;
 
-                        App.JsonSerializer.Populate(rd, this.m_favList);
+                        App.JsonSerializer.Populate(rd, lst);
                     }
 
                     return true;
@@ -166,31 +194,57 @@ namespace Flackhole
                 return;
             }
 
-            this.m_favCount = this.m_favList.Count;
+            this.m_favCount = lst.Count;
 
             //////////////////////////////////////////////////
 
-            var sfd = new System.Windows.Forms.FolderBrowserDialog();
-            if (sfd.ShowDialog() != System.Windows.Forms.DialogResult.OK)
-                return;
+            var msgResult = MessageBox.Show(
+                this,
+                "삭제하기 전에 미디어(사진/동영상) 을 저장할까요?\n\n예 : 미디어 저장 및 삭제\n아니오 : 삭제만\n\n닫기 : 프로그램 종료",
+                "Flackhole (관심글 청소기)",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question,
+                MessageBoxResult.Yes);
 
-            this.m_baseDirectory = Path.Combine(@"\\?\" + sfd.SelectedPath, $"Flackhole {this.m_twitterClient.ScreenName}");
-
-            int i = 2;
-            while (Directory.Exists(this.m_baseDirectory))
-                this.m_baseDirectory = Path.Combine(@"\\?\" + sfd.SelectedPath, $"Flackhole {this.m_twitterClient.ScreenName} ({i++})");
-
-            this.m_failDirectory = Path.Combine(this.m_baseDirectory, "[작업오류]");
-
-            try
+            if (msgResult != MessageBoxResult.Yes && msgResult != MessageBoxResult.No)
             {
-                Directory.CreateDirectory(this.m_baseDirectory);
-            }
-            catch (Exception)
-            {
-                MessageBox.Show(this, "저장할 폴더를 생성하지 못하였습니다.", "Flackhole (관심글 청소기)", MessageBoxButton.OK, MessageBoxImage.Error);
                 this.Close();
                 return;
+            }
+
+            var withDownload = msgResult == MessageBoxResult.Yes;
+
+            if (!withDownload)
+            {
+                this.ctlSaveCapacity.TextDecorations = TextDecorations.Strikethrough;
+                this.ctlSaveSucc.TextDecorations = TextDecorations.Strikethrough;
+                this.ctlSaveFail.TextDecorations = TextDecorations.Strikethrough;
+            }
+
+            if (withDownload)
+            {
+                var sfd = new System.Windows.Forms.FolderBrowserDialog();
+                if (sfd.ShowDialog() != System.Windows.Forms.DialogResult.OK)
+                    return;
+
+                this.m_baseDirectory = Path.Combine(@"\\?\" + sfd.SelectedPath, $"Flackhole {this.m_twitterClient.ScreenName}");
+
+                int i = 2;
+                while (Directory.Exists(this.m_baseDirectory))
+                    this.m_baseDirectory = Path.Combine(@"\\?\" + sfd.SelectedPath, $"Flackhole {this.m_twitterClient.ScreenName} ({i++})");
+
+                this.m_failDirectory = Path.Combine(this.m_baseDirectory, "[작업오류]");
+
+                try
+                {
+                    Directory.CreateDirectory(this.m_baseDirectory);
+                }
+                catch (Exception)
+                {
+                    MessageBox.Show(this, "저장할 폴더를 생성하지 못하였습니다.", "Flackhole (관심글 청소기)", MessageBoxButton.OK, MessageBoxImage.Error);
+                    this.Close();
+                    return;
+                }
             }
 
             //////////////////////////////////////////////////
@@ -200,8 +254,8 @@ namespace Flackhole
             this.m_startTime = DateTime.Now;
 
             this.ctlProgress.Value = 0;
-            this.ctlProgress.Maximum = this.m_favList.Count;
-            this.UpdateProgress(null, null);
+            this.ctlProgress.Maximum = lst.Count;
+            this.UpdateDefaultStyle();
 
             _ = Task.Factory.StartNew(() =>
               {
@@ -216,60 +270,221 @@ namespace Flackhole
                   }
               });
 
-            await Task.Factory.StartNew(() => this.m_favList.Sort((a, b) => a.Like.TweetId.CompareTo(b.Like.TweetId)));
+            await Task.Factory.StartNew(() =>
+            {
+                lst.Sort((a, b) => a.Like.TweetId.CompareTo(b.Like.TweetId));
+
+                if (withDownload)
+                {
+                    foreach (var fav in lst)
+                    {
+                        if (!string.IsNullOrWhiteSpace(fav.Like.FullText) && regTCo.IsMatch(fav.Like.FullText))
+                            this.m_todoLookup.Push(fav);
+                        else
+                            this.m_todoDestory.Push(fav.Like.TweetId);
+                    }
+                }
+                else
+                {
+                    foreach (var fav in lst)
+                        this.m_todoDestory.Push(fav.Like.TweetId);
+                }
+            });
 
             this.ctlStatus.Text = "작동중";
-            for (i = 0; i < Workers; i++)
+
+            this.m_workerDestory = WorkerDestory;
+
+            if (withDownload)
             {
-                new Thread(this.Runner)
+                this.m_workerDownloader = WorkerDownloader;
+                this.m_workerLookup = 1;
+            }
+
+            for (var i = 0; i < WorkerDestory; i++)
+            {
+                new Thread(this.ThreadDestroyer)
                 {
                     IsBackground = true,
                     Priority = ThreadPriority.Lowest,
                 }.Start();
-                //_ = Task.Run(this.Runner);
+            }
+
+            if (withDownload)
+            {
+                for (var i = 0; i < WorkerDownloader; i++)
+                {
+                    new Thread(this.ThreadDownloader)
+                    {
+                        IsBackground = true,
+                        Priority = ThreadPriority.Lowest,
+                    }.Start();
+                }
+
+                new Thread(this.ThreadLookup)
+                {
+                    IsBackground = true,
+                    Priority = ThreadPriority.Lowest,
+                }.Start();
             }
         }
 
-        private static readonly Regex regTCo = new Regex(@"https?://t\.co/([^ ]+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        private void Runner()
+        private void ThreadDestroyer()
         {
-            bool? downloadSucceed;
+            string statusId;
+
             while (true)
             {
-                FavObject fav;
-
-                lock (this.m_favList)
+                lock (this.m_todoDestory)
                 {
-                    if (this.m_favList.Count == 0)
+                    if (this.m_todoDestory.Count == 0)
                         break;
 
-                    fav = this.m_favList[this.m_favList.Count - 1];
-                    this.m_favList.RemoveAt(this.m_favList.Count - 1);
+                    while (this.m_todoDestory.Count == 0)
+                    {
+                        if (Interlocked.Read(ref this.m_workerDownloader) == 0)
+                        {
+                            if (Interlocked.Decrement(ref this.m_workerDestory) == 0)
+                            {
+                                this.Dispatcher.Invoke(
+                                    () =>
+                                    {
+                                        this.taskBarItemInfo.ProgressState = TaskbarItemProgressState.None;
+
+                                        MessageBox.Show(this, "작업이 완료되었습니다.", "Flackhole (관심글 청소기)", MessageBoxButton.OK, MessageBoxImage.Information);
+                                        this.Close();
+                                    });
+                            }
+
+                            return;
+                        }
+
+                        Monitor.Wait(this.m_todoDownload);
+                    }
+
+                    statusId = this.m_todoDestory.Pop();
                 }
 
-                downloadSucceed = null;
-                if (!string.IsNullOrWhiteSpace(fav.Like.FullText) && regTCo.IsMatch(fav.Like.FullText))
+                this.Remove(statusId);
+            }
+        }
+        private void ThreadDownloader()
+        {
+            FavObject2 fav2;
+
+            while (true)
+            {
+                lock (this.m_todoDownload)
                 {
-                    downloadSucceed = this.Download(fav);
+                    while (this.m_todoDownload.Count == 0)
+                    {
+                        if (Interlocked.Read(ref this.m_workerLookup) == 0)
+                        {
+                            Interlocked.Decrement(ref this.m_workerDownloader);
+
+                            lock (this.m_todoDestory)
+                            {
+                                Monitor.PulseAll(this.m_todoDestory);
+                            }
+                            return;
+                        }
+
+                        Monitor.Wait(this.m_todoDownload);
+                    }
+
+                    fav2 = this.m_todoDownload.Pop();
                 }
 
-                this.Remove(fav.Like.TweetId, downloadSucceed);
+                this.Download(fav2);
+
+                lock (this.m_todoDestory)
+                {
+                    this.m_todoDestory.Push(fav2.FavObject.Like.TweetId);
+
+                    Monitor.Pulse(this.m_todoDestory);
+                }
             }
 
-            this.WorkerExit();
         }
-
-        private static readonly DateTime ForTimeStamp = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-        private bool Download(FavObject fav)
+        private void ThreadLookup()
         {
-            StatusObject status = null;
-            bool succ = false;
+            var idTry = new Dictionary<string, int>();
+            var id = new Dictionary<string, FavObject>();
 
-            for (int i = 0; i < MaxTries && !succ; i++)
+            var lst = new List<StatusObject>(LookupIdCount);
+
+            while (true)
             {
-                this.m_limit.Wait();
+                while (idTry.Count < LookupIdCount & this.m_todoLookup.Count > 0)
+                {
+                    var fav = this.m_todoLookup.Pop();
+                    idTry[fav.Like.TweetId] = 0;
+                    id[fav.Like.TweetId] = fav;
+                }
 
-                var req = this.m_twitterClient.CreateReqeust("GET", $"https://api.twitter.com/1.1/statuses/show.json?tweet_mode=extended&id={fav.Like.TweetId}");
+                if (idTry.Count == 0)
+                {
+                    Interlocked.Exchange(ref this.m_workerLookup, 0);
+
+                    lock (this.m_todoDownload)
+                    {
+                        Monitor.PulseAll(this.m_todoDownload);
+                    }
+
+                    return;
+                }
+
+                Lookup();
+
+                lock (this.m_todoDownload)
+                {
+                    foreach (var k in idTry.Keys.ToArray())
+                    {
+                        if (++idTry[k] >= LookupMaxTries)
+                        {
+                            this.m_todoDownload.Push( new FavObject2 { FavObject = id[k], });
+
+                            idTry.Remove(k);
+                            id.Remove(k);
+                        }
+                    }
+
+                    if (this.m_todoDownload.Count > 0)
+                        Monitor.PulseAll(this.m_todoDownload);
+                }
+            }
+
+            void Lookup()
+            {
+                var req = this.m_twitterClient.CreateReqeust("POST", $"https://api.twitter.com/1.1/statuses/lookup.json");
+
+                try
+                {
+                    using (var sw = new StreamWriter(req.GetRequestStream()))
+                    {
+                        sw.Write("tweet_mode=extended&id=");
+
+                        var first = true;
+                        foreach (var k in idTry.Keys)
+                        {
+                            if (first)
+                                first = false;
+                            else
+                            {
+                                sw.Write(',');
+                                first = false;
+                            }
+                            sw.Write(k);
+                        }
+
+                        sw.Flush();
+                    }
+                }
+                catch
+                {
+                    Wait(DateTime.UtcNow + TimeSpan.FromSeconds(30));
+                    return;
+                }
 
                 HttpWebResponse res = null;
                 try
@@ -287,105 +502,103 @@ namespace Flackhole
                 if (res == null)
                 {
                     Thread.Sleep(TimeSpan.FromSeconds(10));
-                    continue;
+                    return;
                 }
-                else
+
+                using (res)
                 {
-                    using (res)
+                    if (res.StatusCode == HttpStatusCode.OK)
                     {
-                        switch (res.StatusCode)
+                        using (var stream = res.GetResponseStream())
+                        using (var streamReader = new StreamReader(stream, Encoding.UTF8))
                         {
-                            case HttpStatusCode.OK:
-                                succ = true;
+                            lst.Clear();
+                            App.JsonSerializer.Populate(streamReader, lst);
 
-                                using (var stream = res.GetResponseStream())
-                                using (var streamReader = new StreamReader(stream, Encoding.UTF8))
-                                {
-                                    status = (StatusObject)App.JsonSerializer.Deserialize(streamReader, typeof(StatusObject));
-                                }
-                                break;
-
-                            case HttpStatusCode.Unauthorized:
-                            case HttpStatusCode.Forbidden:
-                            case HttpStatusCode.NotFound:
-                                succ = true;
-                                break;
-                        }
-
-                        if (status != null)
-                            break;
-
-                        var waitForLimit = res.StatusCode == (HttpStatusCode)429;
-                        if (!waitForLimit)
-                        {
-                            if (int.TryParse(res.Headers.Get("x-rate-limit-limit"), out int limit) && 
-                                int.TryParse(res.Headers.Get("x-rate-limit-remaining"), out int remaining))
+                            lock (this.m_todoDownload)
                             {
-                                waitForLimit = remaining < (int)(limit * ApiRateRemain);
-                            }
-                        }
-
-                        if (waitForLimit)
-                        {
-                            if (this.m_limitLock.WaitOne(0))
-                            {
-                                this.m_limit.Reset();
-
-                                this.Dispatcher.Invoke(() => this.taskBarItemInfo.ProgressState = TaskbarItemProgressState.Paused);
-
-                                try
+                                foreach (var status in lst)
                                 {
-                                    DateTime dstTime;
-                                    if (int.TryParse(res.Headers.Get("x-rate-limit-reset"), out int reset))
-                                        dstTime = ForTimeStamp.AddSeconds(reset);
-                                    else
-                                        dstTime = DateTime.Now + TimeSpan.FromMinutes(5);
-
-                                    if (dstTime > DateTime.UtcNow)
-                                    {
-                                        using (var m = new ManualResetEventSlim(true))
+                                    this.m_todoDownload.Push(
+                                        new FavObject2
                                         {
-                                            var task = Task.Factory.StartNew(() =>
-                                            {
-                                                while (m.IsSet)
-                                                {
-                                                    var dt = dstTime - DateTime.UtcNow;
+                                            FavObject = id[status.IdStr],
+                                            Status = status,
+                                        });
 
-                                                    this.Dispatcher.Invoke(() => this.ctlStatus.Text = string.Format("다운로드 대기중 {0:00}:{1:00}", dt.Minutes, dt.Seconds));
-                                                }
-                                            });
-
-                                            Thread.Sleep(dstTime - DateTime.UtcNow);
-                                            m.Reset();
-                                            task.Wait();
-                                        }
-                                    }
-
-                                    this.Dispatcher.Invoke(() => {
-                                        this.taskBarItemInfo.ProgressState = TaskbarItemProgressState.Normal;
-                                        this.ctlStatus.Text = "작동중";
-                                    });
-                                }
-                                catch
-                                {
+                                    idTry.Remove(status.IdStr);
+                                    id.Remove(status.IdStr);
                                 }
 
-                                this.m_limit.Set();
+                                Monitor.PulseAll(this.m_todoDownload);
                             }
-                            else
-                            {
-                                this.m_limitLock.WaitOne();
-                            }
-
-                            this.m_limitLock.Set();
                         }
+                    }
+
+                    var waitForLimit = res.StatusCode == (HttpStatusCode)429;
+                    if (!waitForLimit)
+                    {
+                        if (int.TryParse(res.Headers.Get("x-rate-limit-limit"), out int limit) &&
+                            int.TryParse(res.Headers.Get("x-rate-limit-remaining"), out int remaining))
+                        {
+                            waitForLimit = remaining < (int)(limit * ApiRateRemain);
+                        }
+                    }
+
+                    if (waitForLimit)
+                    {
+                        if (int.TryParse(res.Headers.Get("x-rate-limit-reset"), out int reset))
+                            Wait(ForTimeStamp.AddSeconds(reset));
+                        else
+                            Wait(DateTime.Now + TimeSpan.FromMinutes(5));
                     }
                 }
             }
 
-            if (succ && status?.ExtendedEntities.Media?.Length > 0)
+            void Wait(DateTime dstTime)
             {
-                var dir = Path.Combine(this.m_baseDirectory, status.User.ScreenName, fav.FileName);
+                if (dstTime <= DateTime.UtcNow)
+                    return;
+
+                this.Dispatcher.Invoke(() => this.taskBarItemInfo.ProgressState = TaskbarItemProgressState.Paused);
+
+                try
+                {
+                    using (var m = new ManualResetEventSlim(true))
+                    {
+                        var task = Task.Factory.StartNew(() =>
+                        {
+                            while (m.IsSet)
+                            {
+                                var dt = dstTime - DateTime.UtcNow;
+
+                                this.Dispatcher.Invoke(() => this.ctlStatus.Text = string.Format("트윗 조회 대기중 {0:00}:{1:00}", dt.Minutes, dt.Seconds));
+                            }
+                        });
+
+                        Thread.Sleep(Math.Max((dstTime - DateTime.UtcNow).Milliseconds, 100));
+                        m.Reset();
+                        task.Wait();
+                    }
+                }
+                catch
+                {
+                }
+
+                this.Dispatcher.Invoke(() =>
+                {
+                    this.taskBarItemInfo.ProgressState = TaskbarItemProgressState.Normal;
+                    this.ctlStatus.Text = "작동중";
+                });
+            }
+        }
+
+        private static readonly DateTime ForTimeStamp = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        private void Download(FavObject2 fav)
+        {
+            if (fav.Status.ExtendedEntities.Media?.Length > 0)
+            {
+                var dir = Path.Combine(this.m_baseDirectory, fav.Status.User.ScreenName, fav.FavObject.FileName);
                 try
                 {
                     Directory.CreateDirectory(dir);
@@ -396,25 +609,28 @@ namespace Flackhole
 
                 var f = Parallel.For(
                     0,
-                    status.ExtendedEntities.Media.Length,
+                    fav.Status.ExtendedEntities.Media.Length,
                     i =>
                     {
                         var downloaded = false;
 
-                        var pathFile = Path.Combine(dir, $"{fav.Like.TweetId} {(i + 1)}");
+                        var pathFile = Path.Combine(dir, $"{fav.FavObject.Like.TweetId} {(i + 1)}");
 
+                        string rawUri = null;
                         Uri uri = null;
-                        if (status.ExtendedEntities.Media[i].VideoInfo.Variants?.Length > 0)
+                        if (fav.Status.ExtendedEntities.Media[i].VideoInfo.Variants?.Length > 0)
                         {
                             try
                             {
-                                if (status.ExtendedEntities.Media[i].VideoInfo.Variants.Length == 0)
+                                if (fav.Status.ExtendedEntities.Media[i].VideoInfo.Variants.Length == 1)
                                 {
-                                    uri = new Uri(status.ExtendedEntities.Media[i].VideoInfo.Variants[0].Url);
+                                    rawUri = fav.Status.ExtendedEntities.Media[i].VideoInfo.Variants[0].Url;
+                                    uri = new Uri(rawUri);
                                 }
                                 else
                                 {
-                                    uri = new Uri(status.ExtendedEntities.Media[i].VideoInfo.Variants?.Where(e => e.Bitrate != 0).Aggregate((a, b) => a.Bitrate > b.Bitrate ? a : b).Url);
+                                    rawUri = fav.Status.ExtendedEntities.Media[i].VideoInfo.Variants?.Where(e => e.Bitrate != 0).Aggregate((a, b) => a.Bitrate > b.Bitrate ? a : b).Url;
+                                    uri = new Uri(rawUri);
                                 }
                             }
                             catch
@@ -425,7 +641,8 @@ namespace Flackhole
                         {
                             try
                             {
-                                uri = new Uri(status.ExtendedEntities.Media[i].MediaUrlHttps + ":orig");
+                                rawUri = fav.Status.ExtendedEntities.Media[i].MediaUrlHttps;
+                                uri = new Uri(rawUri + ":orig");
                             }
                             catch
                             {
@@ -436,7 +653,7 @@ namespace Flackhole
 
                         if (uri != null)
                         {
-                            for (int k = 0; k < MaxTries && !downloaded; k++)
+                            for (int k = 0; k < LookupMaxTries && !downloaded; k++)
                             {
                                 try
                                 {
@@ -452,7 +669,7 @@ namespace Flackhole
 
                                         using (var stream = res.GetResponseStream())
                                         {
-                                            pathFile = Path.ChangeExtension(pathFile, Path.GetExtension(uri.LocalPath));
+                                            pathFile = Path.ChangeExtension(pathFile, Path.GetExtension(rawUri));
                                             using (var fs = File.Create(pathFile))
                                             {
                                                 stream.CopyTo(fs);
@@ -485,7 +702,7 @@ namespace Flackhole
                             pathFile = Path.ChangeExtension(pathFile, ".url");
                             try
                             {
-                                File.WriteAllText(pathFile + ".url", $"[InternetShortcut]\r\nURL={(uri?.ToString() ?? fav.Like.ExpandedUrl)}");
+                                File.WriteAllText(pathFile + ".url", $"[InternetShortcut]\r\nURL={(uri?.ToString() ?? fav.FavObject.Like.ExpandedUrl)}");
                             }
                             catch
                             {
@@ -494,8 +711,8 @@ namespace Flackhole
 
                         try
                         {
-                            File.SetCreationTime(pathFile, status.CreatedAt);
-                            File.SetLastWriteTime(pathFile, status.CreatedAt);
+                            File.SetCreationTime(pathFile, fav.Status.CreatedAt);
+                            File.SetLastWriteTime(pathFile, fav.Status.CreatedAt);
                         }
                         catch
                         {
@@ -504,14 +721,14 @@ namespace Flackhole
 
                 try
                 {
-                    Directory.SetCreationTime(dir, status.CreatedAt);
-                    Directory.SetLastWriteTime(dir, status.CreatedAt);
+                    Directory.SetCreationTime(dir, fav.Status.CreatedAt);
+                    Directory.SetLastWriteTime(dir, fav.Status.CreatedAt);
                 }
                 catch
                 {
                 }
 
-                return true;
+                this.UpdateDownloadStat(true);
             }
             else
             {
@@ -520,18 +737,18 @@ namespace Flackhole
                     Directory.CreateDirectory(this.m_failDirectory);
 
                     File.WriteAllText(
-                        Path.Combine(this.m_failDirectory, fav.FileName + ".url"),
-                        $"[InternetShortcut]\r\nURL={fav.Like.ExpandedUrl}");
+                        Path.Combine(this.m_failDirectory, fav.FavObject.FileName + ".url"),
+                        $"[InternetShortcut]\r\nURL={fav.FavObject.Like.ExpandedUrl}");
                 }
                 catch
                 {
                 }
 
-                return false;
+                this.UpdateDownloadStat(false);
             }
         }
 
-        private void Remove(string id, bool? downloadSucceed)
+        private void Remove(string id)
         {
             var req = this.m_twitterClient.CreateReqeust("POST", "https://api.twitter.com/1.1/favorites/destroy.json");
             req.ContentType = "application/x-www-form-urlencoded; charset=UTF-8";
@@ -546,65 +763,72 @@ namespace Flackhole
                     using (var stream = res.GetResponseStream())
                         stream.CopyTo(Stream.Null);
 
-                    this.UpdateProgress(true, downloadSucceed);
+                    this.UpdateDestoryStat(true);
                 }
             }
             catch
             {
-                this.UpdateProgress(false, downloadSucceed);
+                this.UpdateDestoryStat(false);
             }
         }
 
-        private readonly object m_updateLock = new object();
-        private long m_destroySuccess = 0;
-        private int m_savedCount = 0;
-        private int m_savedCountSuccess = 0;
-        private void UpdateProgress(bool? noErrorDestroy, bool? noErrorSave)
+        private readonly object m_updateProgressStat = new object();
+        private int m_favDestroyed;
+        private int m_favDestoryedSuccess = 0;
+        private void UpdateDestoryStat(bool? success)
         {
-            lock (this.m_updateLock)
+            lock (this.m_updateProgressStat)
             {
-                var count = this.m_favCount;
-                lock (this.m_favList)
-                    count -= this.m_favList.Count;
+                var p = (double)this.m_favDestroyed / this.m_favCount;
 
-                var p = (double)count / this.m_favCount;
-
-                if (noErrorDestroy.HasValue)
+                if (success.HasValue)
                 {
-                    if (noErrorDestroy ?? false)
-                        this.m_destroySuccess++;
-                }
+                    this.m_favDestroyed++;
 
-                if (noErrorSave.HasValue)
-                {
-                    this.m_savedCount++;
-                    if (noErrorSave ?? false)
-                        this.m_savedCountSuccess++;
-
+                    if (success ?? false)
+                        this.m_favDestoryedSuccess++;
                 }
 
                 this.Dispatcher.Invoke(() =>
                 {
-                    this.ctlProgress.Value = count;
+                    this.ctlProgress.Value = this.m_favDestroyed;
                     this.ctlProgressVal.Text = string.Format(
                         "[{0:##0.0} %] {1:#,##0} / {2:#,##0}",
                         p * 100,
-                        count,
+                        this.m_favDestroyed,
                         this.m_favCount
                     );
 
                     this.ctlDetailSucc.Text = string.Format(
                         "삭제 성공 : {0:#,##0} / {1:#,##0} ({2:##0.0} %)",
-                        this.m_destroySuccess,
+                        this.m_favDestoryedSuccess,
                         this.m_favCount,
-                        (float)this.m_destroySuccess / this.m_favCount * 100);
+                        (float)this.m_favDestoryedSuccess / this.m_favCount * 100);
 
                     this.ctlDetailFail.Text = string.Format(
                         "삭제 실패 : {0:#,##0} / {1:#,##0} ({2:##0.0} %)",
-                        count - this.m_destroySuccess,
+                        this.m_favDestroyed - this.m_favDestoryedSuccess,
                         this.m_favCount,
-                        (float)(count - this.m_destroySuccess) / this.m_favCount * 100);
+                        (float)(this.m_favDestroyed - this.m_favDestoryedSuccess) / this.m_favCount * 100);
 
+                    this.taskBarItemInfo.ProgressValue = p;
+                });
+            }
+        }
+
+        private readonly object m_updateDownloadStat = new object();
+        private int m_savedCount = 0;
+        private int m_savedCountSuccess = 0;
+        private void UpdateDownloadStat(bool success)
+        {
+            lock (this.m_updateDownloadStat)
+            {
+                this.m_savedCount++;
+                if (success)
+                    this.m_savedCountSuccess++;
+
+                this.Dispatcher.Invoke(() =>
+                {
                     this.ctlSaveSucc.Text = string.Format(
                         "저장 성공 : {0:#,##0} / {1:#,##0} ({2:##0.0} %)",
                         this.m_savedCountSuccess,
@@ -616,8 +840,6 @@ namespace Flackhole
                         this.m_savedCount - this.m_savedCountSuccess,
                         this.m_savedCount,
                         (float)(this.m_savedCount - this.m_savedCountSuccess) / this.m_savedCount * 100);
-
-                    this.taskBarItemInfo.ProgressValue = p;
                 });
             }
         }
@@ -640,21 +862,6 @@ namespace Flackhole
                     bytes /= 1024;
 
                 this.Dispatcher.Invoke(() => this.ctlSaveCapacity.Text = string.Format("저장 용량 : {0:##0.0} {1} ({2:#,##0} 파일)", bytes, IECStr[i], files));
-            }
-        }
-
-        private void WorkerExit()
-        {
-            if (Interlocked.Decrement(ref this.m_currentWorkers) == 0)
-            {
-                this.Dispatcher.Invoke(
-                    () =>
-                    {
-                        this.taskBarItemInfo.ProgressState = TaskbarItemProgressState.None;
-
-                        MessageBox.Show(this, "작업이 완료되었습니다.", "Flackhole (관심글 청소기)", MessageBoxButton.OK, MessageBoxImage.Information);
-                        this.Close();
-                    });
             }
         }
 

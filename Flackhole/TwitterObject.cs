@@ -15,8 +15,11 @@ namespace Flackhole
         public string ScreenName { get; set; }
     }
 
-    internal class StatusObject
+    internal struct StatusObject
     {
+        [JsonProperty("id_str")]
+        public string IdStr { get; set; }
+
         [JsonProperty("created_at")]
         public DateTime CreatedAt { get; set; }
 
