@@ -491,63 +491,75 @@ namespace Flackhole
 
                         var pathFile = Path.Combine(dir, $"{fav.Like.TweetId} {(i + 1)}");
 
-                        string uri = null;
+                        Uri uri = null;
                         if (status.ExtendedEntities.Media[i].VideoInfo.Variants?.Length > 0)
-                        {
-                            if (status.ExtendedEntities.Media[i].VideoInfo.Variants.Length == 0)
-                            {
-                                uri = status.ExtendedEntities.Media[i].VideoInfo.Variants[0].Url;
-                            }
-                            else
-                            {
-                                try
-                                {
-                                    uri = status.ExtendedEntities.Media[i].VideoInfo.Variants?.Where(e => e.Bitrate != 0).Aggregate((a, b) => a.Bitrate > b.Bitrate ? a : b).Url;
-                                }
-                                catch
-                                {
-                                }
-                            }
-                        }
-                        if (string.IsNullOrWhiteSpace(uri))
-                            uri = status.ExtendedEntities.Media[i].MediaUrlHttps + ":orig";
-
-                        long downloadedSize = 0;
-                        for (int k = 0; k < MaxTries && !downloaded; k++)
                         {
                             try
                             {
-                                var req = WebRequest.CreateHttp(uri);
-                                req.Method = "GET";
-                                req.UserAgent = "Flackhole";
-                                req.Timeout = 5000;
-
-                                var res = req.GetResponse() as HttpWebResponse;
-                                using (res)
+                                if (status.ExtendedEntities.Media[i].VideoInfo.Variants.Length == 0)
                                 {
-                                    downloadedSize = res.ContentLength;
-
-                                    using (var stream = res.GetResponseStream())
-                                    {
-                                        pathFile = Path.ChangeExtension(pathFile, Path.GetExtension(status.ExtendedEntities.Media[i].MediaUrlHttps));
-                                        using (var fs = File.Create(pathFile))
-                                        {
-                                            stream.CopyTo(fs);
-                                            fs.Flush();
-
-                                            downloaded = true;
-                                        }
-                                    }
+                                    uri = new Uri(status.ExtendedEntities.Media[i].VideoInfo.Variants[0].Url);
+                                }
+                                else
+                                {
+                                    uri = new Uri(status.ExtendedEntities.Media[i].VideoInfo.Variants?.Where(e => e.Bitrate != 0).Aggregate((a, b) => a.Bitrate > b.Bitrate ? a : b).Url);
                                 }
                             }
                             catch
                             {
+                            }
+                        }
+                        if (uri == null)
+                        {
+                            try
+                            {
+                                uri = new Uri(status.ExtendedEntities.Media[i].MediaUrlHttps + ":orig");
+                            }
+                            catch
+                            {
+                            }
+                        }
+
+                        long downloadedSize = 0;
+
+                        if (uri != null)
+                        {
+                            for (int k = 0; k < MaxTries && !downloaded; k++)
+                            {
                                 try
                                 {
-                                    File.Delete(pathFile);
+                                    var req = WebRequest.CreateHttp(uri);
+                                    req.Method = "GET";
+                                    req.UserAgent = "Flackhole";
+                                    req.Timeout = 5000;
+
+                                    var res = req.GetResponse() as HttpWebResponse;
+                                    using (res)
+                                    {
+                                        downloadedSize = res.ContentLength;
+
+                                        using (var stream = res.GetResponseStream())
+                                        {
+                                            pathFile = Path.ChangeExtension(pathFile, Path.GetExtension(uri.LocalPath));
+                                            using (var fs = File.Create(pathFile))
+                                            {
+                                                stream.CopyTo(fs);
+                                                fs.Flush();
+
+                                                downloaded = true;
+                                            }
+                                        }
+                                    }
                                 }
-                                catch (Exception)
+                                catch
                                 {
+                                    try
+                                    {
+                                        File.Delete(pathFile);
+                                    }
+                                    catch (Exception)
+                                    {
+                                    }
                                 }
                             }
                         }
@@ -561,7 +573,7 @@ namespace Flackhole
                             pathFile = Path.ChangeExtension(pathFile, ".url");
                             try
                             {
-                                File.WriteAllText(pathFile + ".url", $"[InternetShortcut]\r\nURL={(!string.IsNullOrWhiteSpace(uri) ? uri : fav.Like.ExpandedUrl)}");
+                                File.WriteAllText(pathFile + ".url", $"[InternetShortcut]\r\nURL={(uri?.ToString() ?? fav.Like.ExpandedUrl)}");
                             }
                             catch
                             {
@@ -586,6 +598,8 @@ namespace Flackhole
                 catch
                 {
                 }
+
+                return true;
             }
             else
             {
@@ -600,9 +614,9 @@ namespace Flackhole
                 catch
                 {
                 }
-            }
 
-            return succ;
+                return false;
+            }
         }
 
         private void Remove(string id, bool? downloadSucceed)
