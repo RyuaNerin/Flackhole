@@ -18,7 +18,7 @@ namespace Flackhole
 {
     internal partial class MainWindow : Window
     {
-        private const int WorkerDestory = 8;
+        private const int WorkerDestory = 4;
         private const int WorkerDownloader = 8;
 
         private const int LookupIdCount = 100; // Lookup 할 때 한번에 보낼 id 수
@@ -200,7 +200,7 @@ namespace Flackhole
 
             var msgResult = MessageBox.Show(
                 this,
-                "삭제하기 전에 미디어(사진/동영상) 을 저장할까요?\n\n예 : 미디어 저장 및 삭제\n아니오 : 삭제만\n\n닫기 : 프로그램 종료",
+                "삭제하기 전에 사진과 동영상을 저장할까요?",
                 "Flackhole (관심글 청소기)",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Question,
