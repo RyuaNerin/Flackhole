@@ -18,6 +18,8 @@ namespace Flackhole
 {
     internal partial class MainWindow : Window
     {
+        private const string MutexNamePrefix = "Flackhole-Mutex-";
+
         private const int WorkerDestory = 4;
         private const int WorkerDownloader = 8;
 
@@ -80,6 +82,8 @@ namespace Flackhole
         private long m_workerDestory; // interlocked, 스레드 돌리기 전에 설정
         private long m_workerDownloader; // interlocked
         private long m_workerLookup;
+
+        private Mutex m_mutex;
 
         public MainWindow()
         {
@@ -153,6 +157,14 @@ namespace Flackhole
 
             this.m_twitterClient = form.TwitterClient;
 
+            this.m_mutex = new Mutex(true, MutexNamePrefix + form.TwitterClient.Id, out var muxteIsCreatedNew);
+            if (!muxteIsCreatedNew)
+            {
+                MessageBox.Show(this, "이 계정은 이미 작업중입니다!\n\n로그인 한 아이디 : " + form.TwitterClient.ScreenName, "Flackhole (관심글 청소기)", MessageBoxButton.OK, MessageBoxImage.Error);
+                this.Close();
+                return;
+            }
+                
             //////////////////////////////////////////////////
 
             var dfd = new OpenFileDialog()
