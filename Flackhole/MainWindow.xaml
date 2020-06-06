@@ -1,0 +1,66 @@
+<Window x:Class="Flackhole.MainWindow"
+        x:ClassModifier="internal"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="Flackhole (관심글 청소기)"
+        Width="350"
+        FontSize="15"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="CanMinimize">
+    <Window.TaskbarItemInfo>
+        <TaskbarItemInfo x:Name="taskBarItemInfo"
+                         Description="트위터 관심글 사진/동영상 저장 및 삭제 프로그램" />
+    </Window.TaskbarItemInfo>
+
+    <StackPanel Margin="10">
+        <TextBlock x:Name="ctlStatus"
+                   TextAlignment="Center"
+                   Margin="0 0 0 3"
+                   Text="대기중" />
+        
+        <ProgressBar x:Name="ctlProgress"
+                     Margin="0 0 0 3"
+                     MinHeight="30"
+                     Value="0" />
+
+        <TextBlock x:Name="ctlProgressVal"
+                   Margin="0 0 0 3"
+                   Text="[0 %] 0 / 0" />
+
+        <TextBlock x:Name="ctlTime"
+                   Text="작업 시간 : 0시간 0분 0초" />
+
+        <Separator Margin="5" />
+
+        <TextBlock x:Name="ctlDetailSucc"
+                   Margin="0 0 0 3"
+                   Text="삭제 성공 : 0 / 0 (0.0 %)" />
+
+        <TextBlock x:Name="ctlDetailFail"
+                   Text="삭제 실패 : 0 / 0 (0.0 %)" />
+
+        <Separator Margin="5" />
+
+        <TextBlock x:Name="ctlSaveCapacity"
+                   Margin="0 0 0 3"
+                   Text="저장 용량 : 0.0 MiB (0 개)" />
+
+        <TextBlock x:Name="ctlSaveSucc"
+                   Margin="0 0 0 3"
+                   Text="저장 성공 : 0 / 0 (0.0 %)" />
+
+        <TextBlock x:Name="ctlSaveFail"
+                   Text="저장 실패 : 0 / 0 (0.0 %)" />
+
+        <TextBlock Text="By RyuaNerin"
+                   Margin="0 10 0 0"
+                   HorizontalAlignment="Center"
+                   FontWeight="Bold"
+                   Cursor="Hand"
+                   MouseUp="ctlCopyRight_MouseUp" />
+    </StackPanel>
+</Window>

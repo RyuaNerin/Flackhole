@@ -1,0 +1,14 @@
+<Window x:Class="Flackhole.Login"
+        x:ClassModifier="internal"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Title="Flackhole (관심글 청소기) :: 트위터 로그인"
+        Height="550"
+        Width="800">
+    <WebBrowser x:Name="ctlWebBrowser" />
+</Window>
