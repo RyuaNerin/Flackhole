@@ -112,6 +112,8 @@ namespace Flackhole
         {
             base.OnClosed(e);
 
+            this.m_mutex?.Dispose();
+
             Application.Current.Shutdown();
         }
 
