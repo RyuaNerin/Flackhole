@@ -59,7 +59,7 @@ namespace Flackhole
                     RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
             public string FileName => 
-                regInvaild.Replace($"{this.Like.TweetId} {this.Like.FullText.Substring(0, Math.Min(this.Like.FullText.Length, 50))}", "").Trim().Trim('.', ' ').Trim();
+                regInvaild.Replace($"{this.Like.TweetId} {this.Like.FullText.Substring(0, Math.Min(this.Like.FullText.Length, 50))}", "_").Trim().Trim('.', ' ').Trim();
         }
         public struct FavObject2
         {
